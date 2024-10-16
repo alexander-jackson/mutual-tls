@@ -4,3 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+color-eyre = "0.6.3"
+http = "1.1.0"
+hyper = "1.5.0"
+hyper-rustls = { version = "0.27.3", default-features = false, features = ["http1", "logging", "native-tokio", "ring"] }
+hyper-util = { version = "0.1.9", features = ["server"] }
+rustls = { version = "0.23.14", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2.2.0"
+tokio = { version = "1.40.0", features = ["rt-multi-thread", "macros"] }
+tokio-rustls = { version = "0.26.0", default-features = false, features = ["ring", "logging", "tls12"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
