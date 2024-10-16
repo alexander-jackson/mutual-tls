@@ -9,6 +9,7 @@ http = "1.1.0"
 hyper = "1.5.0"
 hyper-rustls = { version = "0.27.3", default-features = false, features = ["http1", "logging", "native-tokio", "ring"] }
 hyper-util = { version = "0.1.9", features = ["server"] }
+itertools = "0.13.0"
 rustls = { version = "0.23.14", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2.0"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "macros"] }
