@@ -13,10 +13,11 @@ use hyper_util::server::conn::auto::Builder;
 use itertools::Itertools;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
+use rustls::server::{Acceptor, WebPkiClientVerifier};
 use rustls::{RootCertStore, ServerConfig};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::LazyConfigAcceptor;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -92,10 +93,10 @@ async fn main() -> Result<()> {
         .with_client_cert_verifier(verifier)
         .with_single_cert(certificate_chain, private_key)?;
 
-    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000);
+    let config = Arc::new(config);
 
+    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000);
     let incoming = TcpListener::bind(addr).await?;
-    let acceptor = TlsAcceptor::from(Arc::new(config));
 
     tracing::info!(%addr, "listening for incoming requests");
 
@@ -103,23 +104,37 @@ async fn main() -> Result<()> {
 
     loop {
         let (tcp_stream, _remote_addr) = incoming.accept().await?;
-        let acceptor = acceptor.clone();
+        let lazy_acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
 
-        tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(tcp_stream).await {
-                Ok(tls_stream) => tls_stream,
-                Err(err) => {
-                    tracing::error!(?err, "failed to perform tls handshake");
-                    return;
-                }
-            };
+        tokio::pin!(lazy_acceptor);
 
-            if let Err(err) = Builder::new(TokioExecutor::new())
-                .serve_connection(TokioIo::new(tls_stream), service)
-                .await
-            {
-                tracing::error!(?err, "failed to serve connection");
+        match lazy_acceptor.as_mut().await {
+            Ok(start) => {
+                let client_hello = start.client_hello();
+                tracing::info!(name = ?client_hello.server_name(), "the client greeted us");
+
+                let config = Arc::clone(&config);
+                let stream = start.into_stream(config).await.unwrap();
+
+                tokio::spawn(async move {
+                    if let Err(err) = Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                    {
+                        tracing::error!(?err, "failed to serve connection");
+                    }
+                });
             }
-        });
+            Err(err) => {
+                if let Some(mut stream) = lazy_acceptor.take_io() {
+                    stream
+                        .write_all(
+                            format!("HTTP/1.1 400 Invalid Input\r\n\r\n\r\n{:?}\n", err).as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+        }
     }
 }
