@@ -104,11 +104,11 @@ async fn main() -> Result<()> {
 
     loop {
         let (tcp_stream, _remote_addr) = incoming.accept().await?;
-        let lazy_acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
+        let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
 
-        tokio::pin!(lazy_acceptor);
+        tokio::pin!(acceptor);
 
-        match lazy_acceptor.as_mut().await {
+        match acceptor.as_mut().await {
             Ok(start) => {
                 let client_hello = start.client_hello();
                 tracing::info!(name = ?client_hello.server_name(), "the client greeted us");
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
                 });
             }
             Err(err) => {
-                if let Some(mut stream) = lazy_acceptor.take_io() {
+                if let Some(mut stream) = acceptor.take_io() {
                     stream
                         .write_all(
                             format!("HTTP/1.1 400 Invalid Input\r\n\r\n\r\n{:?}\n", err).as_bytes(),
