@@ -1,19 +1,24 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{eyre, Result};
+use http::header::{HOST, USER_AGENT};
 use http::{Request, Response};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use itertools::Itertools;
+use rustls::crypto::ring::sign::any_supported_type;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::{Acceptor, WebPkiClientVerifier};
+use rustls::server::{Acceptor, ClientHello, ResolvesServerCert, WebPkiClientVerifier};
+use rustls::sign::{CertifiedKey, SigningKey};
 use rustls::{RootCertStore, ServerConfig};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -23,9 +28,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-const ROOT_CERT_PATH: &str = "certs/ca.crt";
-const CERT_CHAIN_PATH: &str = "certs/localhost.bundle.crt";
-const KEY_PATH: &str = "certs/localhost.key";
+const ROOT_CERT_PATH: &str = "/certs/ca.crt";
 
 fn setup() -> Result<()> {
     color_eyre::install()?;
@@ -60,7 +63,7 @@ fn initialise_root_cert_store<P: AsRef<Path>>(path: P) -> Result<RootCertStore> 
 fn get_server_credentials<C: AsRef<Path>, K: AsRef<Path>>(
     chain_path: C,
     key_path: K,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+) -> Result<(Vec<CertificateDer<'static>>, Arc<dyn SigningKey>)> {
     let chain_path = chain_path.as_ref();
     let key_path = key_path.as_ref();
 
@@ -71,31 +74,112 @@ fn get_server_credentials<C: AsRef<Path>, K: AsRef<Path>>(
     let private_key = PrivateKeyDer::from_pem_file(key_path)?;
     tracing::info!(path = ?key_path, "read a private key for the server");
 
+    let private_key = any_supported_type(&private_key)?;
+
     Ok((server_certificate, private_key))
 }
 
 async fn root(req: Request<Incoming>) -> Result<Response<String>, hyper::Error> {
-    tracing::info!(?req, "handling a request");
+    let method = req.method();
+    let uri = req.uri();
+    let host = req.headers().get(HOST);
+    let user_agent = req.headers().get(USER_AGENT);
+
+    tracing::info!(%method, %uri, ?host, ?user_agent, "handling a request");
 
     Ok(Response::new("foobar".to_owned()))
+}
+
+#[derive(Clone, Debug)]
+struct CertificateResolver {
+    domains: Arc<HashMap<String, Arc<CertifiedKey>>>,
+}
+
+impl ResolvesServerCert for CertificateResolver {
+    fn resolve(&self, client_hello: ClientHello) -> Option<Arc<CertifiedKey>> {
+        let server_name = client_hello.server_name()?;
+
+        self.domains.get(server_name).cloned()
+    }
+}
+
+#[derive(Debug)]
+enum Protocol {
+    Mutual,
+    Public,
+}
+
+impl FromStr for Protocol {
+    type Err = color_eyre::Report;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "mtls" => Ok(Self::Mutual),
+            "public" => Ok(Self::Public),
+            _ => Err(eyre!("invalid protocol '{value}' provided")),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Authorisation {
+    protocol: Protocol,
+    chain: PathBuf,
+    key: PathBuf,
+}
+
+fn parse_argument(value: String) -> Result<(String, Authorisation)> {
+    let (host, protocol, chain, key) = value
+        .splitn(4, ':')
+        .collect_tuple()
+        .ok_or_else(|| eyre!("invalid argument provided ({value})"))?;
+
+    let authorisation = Authorisation {
+        protocol: Protocol::from_str(protocol)?,
+        chain: PathBuf::from(chain),
+        key: PathBuf::from(key),
+    };
+
+    Ok((host.to_owned(), authorisation))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     setup()?;
 
+    let args: HashMap<String, Authorisation> =
+        std::env::args().skip(1).map(parse_argument).try_collect()?;
+
+    tracing::info!(?args, "parsed some arguments for domains");
+
     let store = initialise_root_cert_store(ROOT_CERT_PATH)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(store)).build()?;
 
-    let (certificate_chain, private_key) = get_server_credentials(CERT_CHAIN_PATH, KEY_PATH)?;
+    let mut domains = HashMap::new();
 
-    let config = ServerConfig::builder()
-        .with_client_cert_verifier(verifier)
-        .with_single_cert(certificate_chain, private_key)?;
+    for (host, auth) in &args {
+        let (chain, key) = get_server_credentials(&auth.chain, &auth.key)?;
 
-    let config = Arc::new(config);
+        domains.insert(host.to_owned(), Arc::new(CertifiedKey::new(chain, key)));
+    }
 
-    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000);
+    let resolver = CertificateResolver {
+        domains: Arc::new(domains),
+    };
+
+    let no_auth_config = Arc::new(
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(resolver.clone())),
+    );
+
+    let mtls_config = Arc::new(
+        ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_cert_resolver(Arc::new(resolver)),
+    );
+
+    let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 443);
     let incoming = TcpListener::bind(addr).await?;
 
     tracing::info!(%addr, "listening for incoming requests");
@@ -111,17 +195,39 @@ async fn main() -> Result<()> {
         match acceptor.as_mut().await {
             Ok(start) => {
                 let client_hello = start.client_hello();
-                tracing::info!(name = ?client_hello.server_name(), "the client greeted us");
+                tracing::debug!(name = ?client_hello.server_name(), "the client greeted us");
 
-                let config = Arc::clone(&config);
-                let stream = start.into_stream(config).await.unwrap();
+                let Some(server_name) = client_hello.server_name() else {
+                    return Err(eyre!("failed to get host from SNI"));
+                };
+
+                let config = args
+                    .get(server_name)
+                    .map(|auth| match auth.protocol {
+                        Protocol::Mutual => Arc::clone(&mtls_config),
+                        Protocol::Public => Arc::clone(&no_auth_config),
+                    })
+                    .ok_or_else(|| eyre!("failed to get host from SNI"))?;
+
+                let stream = match start.into_stream(config).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        tracing::debug!(?e, "failed to upgrade to a tls stream");
+
+                        if let Some(mut stream) = acceptor.take_io() {
+                            stream.write(b"foobar").await?;
+                        }
+
+                        continue;
+                    }
+                };
 
                 tokio::spawn(async move {
                     if let Err(err) = Builder::new(TokioExecutor::new())
                         .serve_connection(TokioIo::new(stream), service)
                         .await
                     {
-                        tracing::error!(?err, "failed to serve connection");
+                        tracing::debug!(?err, "failed to serve connection");
                     }
                 });
             }
@@ -131,8 +237,7 @@ async fn main() -> Result<()> {
                         .write_all(
                             format!("HTTP/1.1 400 Invalid Input\r\n\r\n\r\n{:?}\n", err).as_bytes(),
                         )
-                        .await
-                        .unwrap();
+                        .await?;
                 }
             }
         }
