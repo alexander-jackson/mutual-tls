@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -9,8 +8,7 @@ use itertools::Itertools;
 use rustls::crypto::ring::sign::any_supported_type;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::{ClientHello, ResolvesServerCert};
-use rustls::sign::{CertifiedKey, SigningKey};
+use rustls::sign::SigningKey;
 use rustls::RootCertStore;
 
 pub fn initialise_root_cert_store<P: AsRef<Path>>(path: P) -> Result<RootCertStore> {
@@ -44,25 +42,4 @@ pub fn get_server_credentials<C: AsRef<Path>, K: AsRef<Path>>(
     let private_key = any_supported_type(&private_key)?;
 
     Ok((server_certificate, private_key))
-}
-
-#[derive(Clone, Debug)]
-pub struct CertificateResolver {
-    certificates: Arc<HashMap<String, Arc<CertifiedKey>>>,
-}
-
-impl CertificateResolver {
-    pub fn new(certificates: HashMap<String, Arc<CertifiedKey>>) -> Arc<Self> {
-        Arc::new(Self {
-            certificates: Arc::new(certificates),
-        })
-    }
-}
-
-impl ResolvesServerCert for CertificateResolver {
-    fn resolve(&self, client_hello: ClientHello) -> Option<Arc<CertifiedKey>> {
-        let server_name = client_hello.server_name()?;
-
-        self.certificates.get(server_name).cloned()
-    }
 }

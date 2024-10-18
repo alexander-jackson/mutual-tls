@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 
 use color_eyre::eyre::Result;
-use rustls::server::WebPkiClientVerifier;
+use rustls::server::{ResolvesServerCertUsingSni, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
 use server::MutualTlsServer;
 use tracing::level_filters::LevelFilter;
@@ -17,7 +17,6 @@ mod server;
 mod tls;
 
 use crate::args::Args;
-use crate::tls::CertificateResolver;
 
 const ROOT_CERT_PATH: &str = "/certs/ca.crt";
 
@@ -54,20 +53,18 @@ async fn main() -> Result<()> {
     let store = crate::tls::initialise_root_cert_store(ROOT_CERT_PATH)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(store)).build()?;
 
-    let mut certificates = HashMap::new();
+    let mut resolver = ResolvesServerCertUsingSni::new();
 
     for (host, auth) in &domains {
         let (chain, key) = crate::tls::get_server_credentials(&auth.chain, &auth.key)?;
 
-        certificates.insert(host.to_string(), Arc::new(CertifiedKey::new(chain, key)));
+        resolver.add(host, CertifiedKey::new(chain, key))?;
     }
-
-    let resolver = CertificateResolver::new(certificates);
 
     let server = MutualTlsServer::new(
         domains,
         verifier,
-        resolver,
+        Arc::new(resolver),
         Arc::from(args.downstream.as_str()),
     );
 
