@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+argh = "0.1.12"
 color-eyre = "0.6.3"
 http = "1.1.0"
 hyper = "1.5.0"
 hyper-rustls = { version = "0.27.3", default-features = false, features = ["http1", "logging", "native-tokio", "ring"] }
-hyper-util = { version = "0.1.9", features = ["server"] }
+hyper-util = { version = "0.1.9", features = ["client", "client-legacy", "http1", "http2", "server"] }
 itertools = "0.13.0"
 rustls = { version = "0.23.14", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2.0"

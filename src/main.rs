@@ -6,11 +6,15 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use argh::FromArgs;
 use color_eyre::eyre::{eyre, Result};
 use http::header::{HOST, USER_AGENT};
+use http::uri::PathAndQuery;
 use http::{Request, Response};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use itertools::Itertools;
@@ -79,7 +83,10 @@ fn get_server_credentials<C: AsRef<Path>, K: AsRef<Path>>(
     Ok((server_certificate, private_key))
 }
 
-async fn root(req: Request<Incoming>) -> Result<Response<String>, hyper::Error> {
+async fn root(
+    mut req: Request<Incoming>,
+    downstream: Arc<str>,
+) -> Result<Response<Incoming>, hyper::Error> {
     let method = req.method();
     let uri = req.uri();
     let host = req.headers().get(HOST);
@@ -87,19 +94,28 @@ async fn root(req: Request<Incoming>) -> Result<Response<String>, hyper::Error> 
 
     tracing::info!(%method, %uri, ?host, ?user_agent, "handling a request");
 
-    Ok(Response::new("foobar".to_owned()))
+    let client: Client<HttpConnector, Incoming> =
+        Client::builder(TokioExecutor::new()).build_http();
+
+    let path_and_query = uri.path_and_query().map_or("/", PathAndQuery::as_str);
+
+    *req.uri_mut() = format!("{downstream}{path_and_query}").parse().unwrap();
+
+    let res = client.request(req).await.unwrap();
+
+    Ok(res)
 }
 
 #[derive(Clone, Debug)]
 struct CertificateResolver {
-    domains: Arc<HashMap<String, Arc<CertifiedKey>>>,
+    certificates: Arc<HashMap<String, Arc<CertifiedKey>>>,
 }
 
 impl ResolvesServerCert for CertificateResolver {
     fn resolve(&self, client_hello: ClientHello) -> Option<Arc<CertifiedKey>> {
         let server_name = client_hello.server_name()?;
 
-        self.domains.get(server_name).cloned()
+        self.certificates.get(server_name).cloned()
     }
 }
 
@@ -128,43 +144,71 @@ struct Authorisation {
     key: PathBuf,
 }
 
-fn parse_argument(value: String) -> Result<(String, Authorisation)> {
-    let (host, protocol, chain, key) = value
-        .splitn(4, ':')
-        .collect_tuple()
-        .ok_or_else(|| eyre!("invalid argument provided ({value})"))?;
+struct Domain {
+    host: String,
+    authorisation: Authorisation,
+}
 
-    let authorisation = Authorisation {
-        protocol: Protocol::from_str(protocol)?,
-        chain: PathBuf::from(chain),
-        key: PathBuf::from(key),
-    };
+impl FromStr for Domain {
+    type Err = color_eyre::Report;
 
-    Ok((host.to_owned(), authorisation))
+    fn from_str(value: &str) -> Result<Self> {
+        let (host, protocol, chain, key) = value
+            .splitn(4, ':')
+            .collect_tuple()
+            .ok_or_else(|| eyre!("invalid argument provided ({value})"))?;
+
+        let authorisation = Authorisation {
+            protocol: Protocol::from_str(protocol)?,
+            chain: PathBuf::from(chain),
+            key: PathBuf::from(key),
+        };
+
+        let domain = Self {
+            host: host.to_owned(),
+            authorisation,
+        };
+
+        Ok(domain)
+    }
+}
+
+#[derive(FromArgs)]
+#[argh(description = "program arguments")]
+struct Args {
+    #[argh(option, description = "details for reverse proxying")]
+    domains: Vec<Domain>,
+    #[argh(option, description = "downstream server to proxy to")]
+    downstream: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     setup()?;
 
-    let args: HashMap<String, Authorisation> =
-        std::env::args().skip(1).map(parse_argument).try_collect()?;
+    let args: Args = argh::from_env();
 
-    tracing::info!(?args, "parsed some arguments for domains");
+    let domains: HashMap<_, _> = args
+        .domains
+        .iter()
+        .map(|domain| (domain.host.to_owned(), &domain.authorisation))
+        .collect();
+
+    tracing::info!(?domains, "parsed some arguments for domains");
 
     let store = initialise_root_cert_store(ROOT_CERT_PATH)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(store)).build()?;
 
-    let mut domains = HashMap::new();
+    let mut certificates = HashMap::new();
 
-    for (host, auth) in &args {
+    for (host, auth) in &domains {
         let (chain, key) = get_server_credentials(&auth.chain, &auth.key)?;
 
-        domains.insert(host.to_owned(), Arc::new(CertifiedKey::new(chain, key)));
+        certificates.insert(host.to_string(), Arc::new(CertifiedKey::new(chain, key)));
     }
 
     let resolver = CertificateResolver {
-        domains: Arc::new(domains),
+        certificates: Arc::new(certificates),
     };
 
     let no_auth_config = Arc::new(
@@ -179,12 +223,12 @@ async fn main() -> Result<()> {
             .with_cert_resolver(Arc::new(resolver)),
     );
 
+    let downstream = Arc::from(args.downstream.as_str());
+
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 443);
     let incoming = TcpListener::bind(addr).await?;
 
     tracing::info!(%addr, "listening for incoming requests");
-
-    let service = service_fn(root);
 
     loop {
         let (tcp_stream, _remote_addr) = incoming.accept().await?;
@@ -201,7 +245,7 @@ async fn main() -> Result<()> {
                     return Err(eyre!("failed to get host from SNI"));
                 };
 
-                let config = args
+                let config = domains
                     .get(server_name)
                     .map(|auth| match auth.protocol {
                         Protocol::Mutual => Arc::clone(&mtls_config),
@@ -222,9 +266,18 @@ async fn main() -> Result<()> {
                     }
                 };
 
+                let downstream = Arc::clone(&downstream);
+
                 tokio::spawn(async move {
                     if let Err(err) = Builder::new(TokioExecutor::new())
-                        .serve_connection(TokioIo::new(stream), service)
+                        .serve_connection(
+                            TokioIo::new(stream),
+                            service_fn(|req| {
+                                let downstream = Arc::clone(&downstream);
+
+                                async move { root(req, downstream).await }
+                            }),
+                        )
                         .await
                     {
                         tracing::debug!(?err, "failed to serve connection");
