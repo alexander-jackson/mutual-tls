@@ -62,10 +62,17 @@ impl MutualTlsServer {
             match acceptor.as_mut().await {
                 Ok(start) => {
                     let client_hello = start.client_hello();
-                    tracing::debug!(name = ?client_hello.server_name(), "the client greeted us");
+                    let server_name = client_hello.server_name();
+                    tracing::debug!(?server_name, "the client greeted us");
 
-                    let Some(server_name) = client_hello.server_name() else {
-                        return Err(eyre!("failed to get host from SNI"));
+                    let Some(server_name) = server_name else {
+                        if let Some(mut stream) = acceptor.take_io() {
+                            stream
+                                .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                                .await?;
+                        }
+
+                        continue;
                     };
 
                     let config = self
@@ -83,7 +90,9 @@ impl MutualTlsServer {
                             tracing::debug!(?e, "failed to upgrade to a tls stream");
 
                             if let Some(mut stream) = acceptor.take_io() {
-                                stream.write_all(b"foobar").await?;
+                                stream
+                                    .write_all(b"HTTP/1.1 401 Unauthorized\r\n\r\n")
+                                    .await?;
                             }
 
                             continue;
@@ -112,7 +121,7 @@ impl MutualTlsServer {
                     if let Some(mut stream) = acceptor.take_io() {
                         stream
                             .write_all(
-                                format!("HTTP/1.1 400 Invalid Input\r\n\r\n\r\n{:?}\n", err)
+                                format!("HTTP/1.1 400 Bad Request\r\n\r\n\r\n{:?}\n", err)
                                     .as_bytes(),
                             )
                             .await?;
