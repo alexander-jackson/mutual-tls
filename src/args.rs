@@ -6,7 +6,7 @@ use color_eyre::eyre::eyre;
 use color_eyre::{Report, Result};
 use itertools::Itertools;
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum Protocol {
     Mutual,
     Public,
@@ -24,7 +24,7 @@ impl FromStr for Protocol {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Authorisation {
     pub protocol: Protocol,
     pub chain: PathBuf,

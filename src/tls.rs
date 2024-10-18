@@ -52,10 +52,10 @@ pub struct CertificateResolver {
 }
 
 impl CertificateResolver {
-    pub fn new(certificates: HashMap<String, Arc<CertifiedKey>>) -> Self {
-        Self {
+    pub fn new(certificates: HashMap<String, Arc<CertifiedKey>>) -> Arc<Self> {
+        Arc::new(Self {
             certificates: Arc::new(certificates),
-        }
+        })
     }
 }
 

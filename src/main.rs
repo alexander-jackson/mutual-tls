@@ -1,12 +1,14 @@
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 
+use args::Authorisation;
 use color_eyre::eyre::{eyre, Result};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
-use rustls::server::{Acceptor, WebPkiClientVerifier};
+use rustls::server::danger::ClientCertVerifier;
+use rustls::server::{Acceptor, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
 use rustls::ServerConfig;
 use tokio::io::AsyncWriteExt;
@@ -42,6 +44,100 @@ fn setup() -> Result<()> {
     Ok(())
 }
 
+struct MutualTlsServer {
+    domains: HashMap<String, Authorisation>,
+    verifier: Arc<dyn ClientCertVerifier>,
+    resolver: Arc<dyn ResolvesServerCert>,
+    downstream: Arc<str>,
+}
+
+impl MutualTlsServer {
+    async fn run(&self, addr: SocketAddr) -> Result<()> {
+        let incoming = TcpListener::bind(addr).await?;
+        tracing::info!(%addr, "listening for incoming requests");
+
+        let default_config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_cert_resolver(Arc::clone(&self.resolver)),
+        );
+
+        let mtls_config = Arc::new(
+            ServerConfig::builder()
+                .with_client_cert_verifier(Arc::clone(&self.verifier))
+                .with_cert_resolver(Arc::clone(&self.resolver)),
+        );
+
+        loop {
+            let (tcp_stream, _remote_addr) = incoming.accept().await?;
+            let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
+
+            tokio::pin!(acceptor);
+
+            match acceptor.as_mut().await {
+                Ok(start) => {
+                    let client_hello = start.client_hello();
+                    tracing::debug!(name = ?client_hello.server_name(), "the client greeted us");
+
+                    let Some(server_name) = client_hello.server_name() else {
+                        return Err(eyre!("failed to get host from SNI"));
+                    };
+
+                    let config = self
+                        .domains
+                        .get(server_name)
+                        .map(|auth| match auth.protocol {
+                            Protocol::Mutual => Arc::clone(&mtls_config),
+                            Protocol::Public => Arc::clone(&default_config),
+                        })
+                        .ok_or_else(|| eyre!("failed to get host from SNI"))?;
+
+                    let stream = match start.into_stream(config).await {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            tracing::debug!(?e, "failed to upgrade to a tls stream");
+
+                            if let Some(mut stream) = acceptor.take_io() {
+                                stream.write_all(b"foobar").await?;
+                            }
+
+                            continue;
+                        }
+                    };
+
+                    let downstream = Arc::clone(&self.downstream);
+
+                    tokio::spawn(async move {
+                        if let Err(err) = Builder::new(TokioExecutor::new())
+                            .serve_connection(
+                                TokioIo::new(stream),
+                                service_fn(|req| {
+                                    let downstream = Arc::clone(&downstream);
+
+                                    async move { crate::proxy::handle(req, downstream).await }
+                                }),
+                            )
+                            .await
+                        {
+                            tracing::debug!(?err, "failed to serve connection");
+                        }
+                    });
+                }
+                Err(err) => {
+                    if let Some(mut stream) = acceptor.take_io() {
+                        stream
+                            .write_all(
+                                format!("HTTP/1.1 400 Invalid Input\r\n\r\n\r\n{:?}\n", err)
+                                    .as_bytes(),
+                            )
+                            .await?;
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     setup()?;
@@ -51,7 +147,7 @@ async fn main() -> Result<()> {
     let domains: HashMap<_, _> = args
         .domains
         .iter()
-        .map(|domain| (domain.host.to_owned(), &domain.authorisation))
+        .map(|domain| (domain.host.to_owned(), domain.authorisation.clone()))
         .collect();
 
     tracing::info!(?domains, "parsed some arguments for domains");
@@ -69,88 +165,15 @@ async fn main() -> Result<()> {
 
     let resolver = CertificateResolver::new(certificates);
 
-    let no_auth_config = Arc::new(
-        ServerConfig::builder()
-            .with_no_client_auth()
-            .with_cert_resolver(Arc::new(resolver.clone())),
-    );
+    let server = MutualTlsServer {
+        domains,
+        verifier,
+        resolver,
+        downstream: Arc::from(args.downstream.as_str()),
+    };
 
-    let mtls_config = Arc::new(
-        ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_cert_resolver(Arc::new(resolver)),
-    );
+    let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 443).into();
+    server.run(addr).await?;
 
-    let downstream = Arc::from(args.downstream.as_str());
-
-    let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 443);
-    let incoming = TcpListener::bind(addr).await?;
-
-    tracing::info!(%addr, "listening for incoming requests");
-
-    loop {
-        let (tcp_stream, _remote_addr) = incoming.accept().await?;
-        let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
-
-        tokio::pin!(acceptor);
-
-        match acceptor.as_mut().await {
-            Ok(start) => {
-                let client_hello = start.client_hello();
-                tracing::debug!(name = ?client_hello.server_name(), "the client greeted us");
-
-                let Some(server_name) = client_hello.server_name() else {
-                    return Err(eyre!("failed to get host from SNI"));
-                };
-
-                let config = domains
-                    .get(server_name)
-                    .map(|auth| match auth.protocol {
-                        Protocol::Mutual => Arc::clone(&mtls_config),
-                        Protocol::Public => Arc::clone(&no_auth_config),
-                    })
-                    .ok_or_else(|| eyre!("failed to get host from SNI"))?;
-
-                let stream = match start.into_stream(config).await {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        tracing::debug!(?e, "failed to upgrade to a tls stream");
-
-                        if let Some(mut stream) = acceptor.take_io() {
-                            stream.write_all(b"foobar").await?;
-                        }
-
-                        continue;
-                    }
-                };
-
-                let downstream = Arc::clone(&downstream);
-
-                tokio::spawn(async move {
-                    if let Err(err) = Builder::new(TokioExecutor::new())
-                        .serve_connection(
-                            TokioIo::new(stream),
-                            service_fn(|req| {
-                                let downstream = Arc::clone(&downstream);
-
-                                async move { crate::proxy::handle(req, downstream).await }
-                            }),
-                        )
-                        .await
-                    {
-                        tracing::debug!(?err, "failed to serve connection");
-                    }
-                });
-            }
-            Err(err) => {
-                if let Some(mut stream) = acceptor.take_io() {
-                    stream
-                        .write_all(
-                            format!("HTTP/1.1 400 Invalid Input\r\n\r\n\r\n{:?}\n", err).as_bytes(),
-                        )
-                        .await?;
-                }
-            }
-        }
-    }
+    Ok(())
 }
