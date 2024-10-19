@@ -36,22 +36,26 @@ fn setup() -> Result<()> {
 async fn main() -> Result<()> {
     setup()?;
 
-    let args: Args = argh::from_env();
+    let Args {
+        domains,
+        downstream,
+        mtls_certificate,
+        addr,
+    } = argh::from_env();
 
-    let domains = args
-        .domains
+    let protocols = domains
         .iter()
         .map(|domain| (domain.host.to_owned(), domain.authorisation.protocol))
         .collect();
 
-    tracing::info!(?domains, "parsed some arguments for domains");
+    tracing::info!(?protocols, "parsed some arguments for protocols");
 
-    let store = crate::tls::initialise_root_cert_store(args.mtls_certificate)?;
+    let store = crate::tls::initialise_root_cert_store(mtls_certificate)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(store)).build()?;
 
     let mut resolver = ResolvesServerCertUsingSni::new();
 
-    for domain in &args.domains {
+    for domain in &domains {
         let Domain {
             host,
             authorisation: Authorisation { chain, key, .. },
@@ -61,13 +65,13 @@ async fn main() -> Result<()> {
     }
 
     let server = MutualTlsServer::new(
-        domains,
+        protocols,
         verifier,
         Arc::new(resolver),
-        Arc::from(args.downstream.as_str()),
+        Arc::from(downstream.as_str()),
     );
 
-    server.run(args.addr).await?;
+    server.run(addr).await?;
 
     Ok(())
 }

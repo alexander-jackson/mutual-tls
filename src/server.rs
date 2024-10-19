@@ -16,7 +16,7 @@ use tokio_rustls::LazyConfigAcceptor;
 use crate::args::Protocol;
 
 pub struct MutualTlsServer {
-    domains: HashMap<String, Protocol>,
+    protocols: HashMap<String, Protocol>,
     verifier: Arc<dyn ClientCertVerifier>,
     resolver: Arc<dyn ResolvesServerCert>,
     downstream: Arc<str>,
@@ -24,13 +24,13 @@ pub struct MutualTlsServer {
 
 impl MutualTlsServer {
     pub fn new(
-        domains: HashMap<String, Protocol>,
+        protocols: HashMap<String, Protocol>,
         verifier: Arc<dyn ClientCertVerifier>,
         resolver: Arc<dyn ResolvesServerCert>,
         downstream: Arc<str>,
     ) -> Self {
         Self {
-            domains,
+            protocols,
             verifier,
             resolver,
             downstream,
@@ -76,7 +76,7 @@ impl MutualTlsServer {
                     };
 
                     let config = self
-                        .domains
+                        .protocols
                         .get(server_name)
                         .map(|protocol| match protocol {
                             Protocol::Mutual => Arc::clone(&mtls_config),
