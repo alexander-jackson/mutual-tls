@@ -1,4 +1,3 @@
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 
 use args::{Authorisation, Domain};
@@ -16,8 +15,6 @@ mod server;
 mod tls;
 
 use crate::args::Args;
-
-const ROOT_CERT_PATH: &str = "/certs/ca.crt";
 
 fn setup() -> Result<()> {
     color_eyre::install()?;
@@ -49,7 +46,7 @@ async fn main() -> Result<()> {
 
     tracing::info!(?domains, "parsed some arguments for domains");
 
-    let store = crate::tls::initialise_root_cert_store(ROOT_CERT_PATH)?;
+    let store = crate::tls::initialise_root_cert_store(args.mtls_certificate)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(store)).build()?;
 
     let mut resolver = ResolvesServerCertUsingSni::new();
@@ -70,8 +67,7 @@ async fn main() -> Result<()> {
         Arc::from(args.downstream.as_str()),
     );
 
-    let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 443).into();
-    server.run(addr).await?;
+    server.run(args.addr).await?;
 
     Ok(())
 }

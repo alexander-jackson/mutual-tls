@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -67,4 +68,8 @@ pub struct Args {
     pub domains: Vec<Domain>,
     #[argh(option, description = "downstream server to proxy to")]
     pub downstream: String,
+    #[argh(option, description = "path to the certificate to use for mTLS")]
+    pub mtls_certificate: PathBuf,
+    #[argh(option, description = "address to bind the server to")]
+    pub addr: SocketAddr,
 }
