@@ -13,10 +13,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio_rustls::LazyConfigAcceptor;
 
-use crate::args::{Authorisation, Protocol};
+use crate::args::Protocol;
 
 pub struct MutualTlsServer {
-    domains: HashMap<String, Authorisation>,
+    domains: HashMap<String, Protocol>,
     verifier: Arc<dyn ClientCertVerifier>,
     resolver: Arc<dyn ResolvesServerCert>,
     downstream: Arc<str>,
@@ -24,7 +24,7 @@ pub struct MutualTlsServer {
 
 impl MutualTlsServer {
     pub fn new(
-        domains: HashMap<String, Authorisation>,
+        domains: HashMap<String, Protocol>,
         verifier: Arc<dyn ClientCertVerifier>,
         resolver: Arc<dyn ResolvesServerCert>,
         downstream: Arc<str>,
@@ -78,7 +78,7 @@ impl MutualTlsServer {
                     let config = self
                         .domains
                         .get(server_name)
-                        .map(|auth| match auth.protocol {
+                        .map(|protocol| match protocol {
                             Protocol::Mutual => Arc::clone(&mtls_config),
                             Protocol::Public => Arc::clone(&default_config),
                         })

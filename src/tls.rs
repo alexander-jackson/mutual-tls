@@ -1,14 +1,13 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::Arc;
 
 use color_eyre::eyre::Result;
 use itertools::Itertools;
 use rustls::crypto::ring::sign::any_supported_type;
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::sign::SigningKey;
+use rustls::pki_types::PrivateKeyDer;
+use rustls::sign::CertifiedKey;
 use rustls::RootCertStore;
 
 pub fn initialise_root_cert_store<P: AsRef<Path>>(path: P) -> Result<RootCertStore> {
@@ -25,10 +24,10 @@ pub fn initialise_root_cert_store<P: AsRef<Path>>(path: P) -> Result<RootCertSto
     Ok(store)
 }
 
-pub fn get_server_credentials<C: AsRef<Path>, K: AsRef<Path>>(
+pub fn get_certified_key<C: AsRef<Path>, K: AsRef<Path>>(
     chain_path: C,
     key_path: K,
-) -> Result<(Vec<CertificateDer<'static>>, Arc<dyn SigningKey>)> {
+) -> Result<CertifiedKey> {
     let chain_path = chain_path.as_ref();
     let key_path = key_path.as_ref();
 
@@ -41,5 +40,7 @@ pub fn get_server_credentials<C: AsRef<Path>, K: AsRef<Path>>(
 
     let private_key = any_supported_type(&private_key)?;
 
-    Ok((server_certificate, private_key))
+    let certified_key = CertifiedKey::new(server_certificate, private_key);
+
+    Ok(certified_key)
 }

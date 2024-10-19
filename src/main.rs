@@ -1,10 +1,9 @@
-use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 
+use args::{Authorisation, Domain};
 use color_eyre::eyre::Result;
 use rustls::server::{ResolvesServerCertUsingSni, WebPkiClientVerifier};
-use rustls::sign::CertifiedKey;
 use server::MutualTlsServer;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -42,10 +41,10 @@ async fn main() -> Result<()> {
 
     let args: Args = argh::from_env();
 
-    let domains: HashMap<_, _> = args
+    let domains = args
         .domains
         .iter()
-        .map(|domain| (domain.host.to_owned(), domain.authorisation.clone()))
+        .map(|domain| (domain.host.to_owned(), domain.authorisation.protocol))
         .collect();
 
     tracing::info!(?domains, "parsed some arguments for domains");
@@ -55,10 +54,13 @@ async fn main() -> Result<()> {
 
     let mut resolver = ResolvesServerCertUsingSni::new();
 
-    for (host, auth) in &domains {
-        let (chain, key) = crate::tls::get_server_credentials(&auth.chain, &auth.key)?;
+    for domain in &args.domains {
+        let Domain {
+            host,
+            authorisation: Authorisation { chain, key, .. },
+        } = domain;
 
-        resolver.add(host, CertifiedKey::new(chain, key))?;
+        resolver.add(host, crate::tls::get_certified_key(chain, key)?)?;
     }
 
     let server = MutualTlsServer::new(
