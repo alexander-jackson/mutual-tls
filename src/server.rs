@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use hyper_util::server::conn::auto::Builder;
 use rustls::server::danger::ClientCertVerifier;
 use rustls::server::{Acceptor, ResolvesServerCert};
 use rustls::ServerConfig;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::LazyConfigAcceptor;
 
@@ -19,15 +20,19 @@ use crate::args::Protocol;
 
 #[derive(Clone, Debug)]
 pub struct ConnectionContext {
-    // The operational unit provided on the client certificate, if using mTLS.
+    /// The operational unit provided on the client certificate, if using mTLS.
     pub unit: Option<String>,
 }
 
 pub struct MutualTlsServer<F> {
+    /// Information about which domains are using mTLS or not.
     protocols: HashMap<String, Protocol>,
+    /// Verifier for client certificates, when using mTLS.
     verifier: Arc<dyn ClientCertVerifier>,
+    /// Resolver for server certificates, based on the SNI host.
     resolver: Arc<dyn ResolvesServerCert>,
-    factory: F,
+    /// Factory for creating services to handle client connections.
+    service_factory: F,
 }
 
 impl<F, S> MutualTlsServer<F>
@@ -38,20 +43,22 @@ where
         + 'static,
     S::Future: 'static,
 {
+    /// Creates a new instance of the server.
     pub fn new(
         protocols: HashMap<String, Protocol>,
         verifier: Arc<dyn ClientCertVerifier>,
         resolver: Arc<dyn ResolvesServerCert>,
-        factory: F,
+        service_factory: F,
     ) -> Self {
         Self {
             protocols,
             verifier,
             resolver,
-            factory,
+            service_factory,
         }
     }
 
+    /// Runs the server on the provided address.
     pub async fn run(&self, addr: SocketAddr) -> Result<()>
     where
         <S as Service<Request<Incoming>>>::Future: Send,
@@ -84,12 +91,7 @@ where
                     tracing::debug!(?server_name, "the client greeted us");
 
                     let Some(server_name) = server_name else {
-                        if let Some(mut stream) = acceptor.take_io() {
-                            stream
-                                .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
-                                .await?;
-                        }
-
+                        handle_bad_request(&mut acceptor).await?;
                         continue;
                     };
 
@@ -106,13 +108,7 @@ where
                         Ok(stream) => stream,
                         Err(e) => {
                             tracing::debug!(?e, "failed to upgrade to a tls stream");
-
-                            if let Some(mut stream) = acceptor.take_io() {
-                                stream
-                                    .write_all(b"HTTP/1.1 401 Unauthorized\r\n\r\n")
-                                    .await?;
-                            }
-
+                            handle_bad_request(&mut acceptor).await?;
                             continue;
                         }
                     };
@@ -143,7 +139,7 @@ where
                     };
 
                     let ctx = ConnectionContext { unit };
-                    let service = (self.factory)(ctx);
+                    let service = (self.service_factory)(ctx);
 
                     tokio::spawn(async move {
                         if let Err(err) = Builder::new(TokioExecutor::new())
@@ -155,16 +151,23 @@ where
                     });
                 }
                 Err(err) => {
-                    if let Some(mut stream) = acceptor.take_io() {
-                        stream
-                            .write_all(
-                                format!("HTTP/1.1 400 Bad Request\r\n\r\n\r\n{:?}\n", err)
-                                    .as_bytes(),
-                            )
-                            .await?;
-                    }
+                    tracing::debug!(?err, "error occurred when accepting connections");
+
+                    handle_bad_request(&mut acceptor).await?;
                 }
             }
         }
     }
+}
+
+async fn handle_bad_request<IO: AsyncRead + AsyncWrite + Unpin>(
+    acceptor: &mut LazyConfigAcceptor<IO>,
+) -> Result<()> {
+    if let Some(mut stream) = acceptor.take_io() {
+        stream
+            .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            .await?;
+    }
+
+    Ok(())
 }
