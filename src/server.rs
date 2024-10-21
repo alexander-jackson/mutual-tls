@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use color_eyre::eyre::{eyre, Result};
-use hyper::service::service_fn;
+use http::{Request, Response};
+use hyper::body::Incoming;
+use hyper::service::Service;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use rustls::server::danger::ClientCertVerifier;
@@ -15,29 +17,45 @@ use tokio_rustls::LazyConfigAcceptor;
 
 use crate::args::Protocol;
 
-pub struct MutualTlsServer {
+#[derive(Clone, Debug)]
+pub struct ConnectionContext {
+    // The operational unit provided on the client certificate, if using mTLS.
+    pub unit: Option<String>,
+}
+
+pub struct MutualTlsServer<F> {
     protocols: HashMap<String, Protocol>,
     verifier: Arc<dyn ClientCertVerifier>,
     resolver: Arc<dyn ResolvesServerCert>,
-    downstream: Arc<str>,
+    factory: F,
 }
 
-impl MutualTlsServer {
+impl<F, S> MutualTlsServer<F>
+where
+    F: Fn(ConnectionContext) -> S,
+    S: Service<Request<Incoming>, Response = Response<Incoming>, Error = hyper::Error>
+        + Send
+        + 'static,
+    S::Future: 'static,
+{
     pub fn new(
         protocols: HashMap<String, Protocol>,
         verifier: Arc<dyn ClientCertVerifier>,
         resolver: Arc<dyn ResolvesServerCert>,
-        downstream: Arc<str>,
+        factory: F,
     ) -> Self {
         Self {
             protocols,
             verifier,
             resolver,
-            downstream,
+            factory,
         }
     }
 
-    pub async fn run(&self, addr: SocketAddr) -> Result<()> {
+    pub async fn run(&self, addr: SocketAddr) -> Result<()>
+    where
+        <S as Service<Request<Incoming>>>::Future: Send,
+    {
         let incoming = TcpListener::bind(addr).await?;
         tracing::info!(%addr, "listening for incoming requests");
 
@@ -124,19 +142,12 @@ impl MutualTlsServer {
                         None
                     };
 
-                    let downstream = Arc::clone(&self.downstream);
+                    let ctx = ConnectionContext { unit };
+                    let service = (self.factory)(ctx);
 
                     tokio::spawn(async move {
                         if let Err(err) = Builder::new(TokioExecutor::new())
-                            .serve_connection(
-                                TokioIo::new(stream),
-                                service_fn(|req| {
-                                    let downstream = Arc::clone(&downstream);
-                                    let unit = unit.clone();
-
-                                    async move { crate::proxy::handle(req, unit, downstream).await }
-                                }),
-                            )
+                            .serve_connection(TokioIo::new(stream), service)
                             .await
                         {
                             tracing::debug!(?err, "failed to serve connection");

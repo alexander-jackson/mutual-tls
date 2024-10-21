@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use args::{Authorisation, Domain};
 use color_eyre::eyre::Result;
+use hyper::service::service_fn;
 use rustls::server::{ResolvesServerCertUsingSni, WebPkiClientVerifier};
-use server::MutualTlsServer;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -15,6 +15,7 @@ mod server;
 mod tls;
 
 use crate::args::Args;
+use crate::server::{ConnectionContext, MutualTlsServer};
 
 fn setup() -> Result<()> {
     color_eyre::install()?;
@@ -64,12 +65,21 @@ async fn main() -> Result<()> {
         resolver.add(host, crate::tls::get_certified_key(chain, key)?)?;
     }
 
-    let server = MutualTlsServer::new(
-        protocols,
-        verifier,
-        Arc::new(resolver),
-        Arc::from(downstream.as_str()),
-    );
+    let downstream = Arc::from(downstream.as_str());
+
+    let service_factory = |ctx: ConnectionContext| {
+        let downstream = Arc::clone(&downstream);
+        let ctx = ctx.clone();
+
+        service_fn(move |req| {
+            let downstream = Arc::clone(&downstream);
+            let ctx = ctx.clone();
+
+            async move { crate::proxy::handle(req, ctx, downstream).await }
+        })
+    };
+
+    let server = MutualTlsServer::new(protocols, verifier, Arc::new(resolver), service_factory);
 
     server.run(addr).await?;
 
