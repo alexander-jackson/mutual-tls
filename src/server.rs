@@ -99,6 +99,31 @@ impl MutualTlsServer {
                         }
                     };
 
+                    let conn = stream.get_ref().1;
+
+                    tracing::debug!(
+                        certificates = ?conn.peer_certificates().map(|certs| certs.len()),
+                        "acquired some certificates from the client"
+                    );
+
+                    let unit = if let Some(certs) = conn.peer_certificates() {
+                        let (_, client_cert) = x509_parser::parse_x509_certificate(&certs[0])?;
+
+                        let unit = client_cert
+                            .tbs_certificate
+                            .subject
+                            .iter_organizational_unit()
+                            .next()
+                            .ok_or_else(|| eyre!("invalid certificate provided"))?
+                            .as_str()?;
+
+                        tracing::info!(?unit, "parsed a client certificate");
+
+                        Some(unit.to_owned())
+                    } else {
+                        None
+                    };
+
                     let downstream = Arc::clone(&self.downstream);
 
                     tokio::spawn(async move {
@@ -107,8 +132,9 @@ impl MutualTlsServer {
                                 TokioIo::new(stream),
                                 service_fn(|req| {
                                     let downstream = Arc::clone(&downstream);
+                                    let unit = unit.clone();
 
-                                    async move { crate::proxy::handle(req, downstream).await }
+                                    async move { crate::proxy::handle(req, unit, downstream).await }
                                 }),
                             )
                             .await

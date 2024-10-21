@@ -10,6 +10,7 @@ use hyper_util::rt::TokioExecutor;
 
 pub async fn handle(
     mut req: Request<Incoming>,
+    unit: Option<String>,
     downstream: Arc<str>,
 ) -> Result<Response<Incoming>, hyper::Error> {
     let method = req.method();
@@ -17,7 +18,7 @@ pub async fn handle(
     let host = req.headers().get(HOST);
     let user_agent = req.headers().get(USER_AGENT);
 
-    tracing::info!(%method, %uri, ?host, ?user_agent, "handling a request");
+    tracing::info!(%method, %uri, ?host, ?user_agent, ?unit, "handling a request");
 
     let client: Client<HttpConnector, Incoming> =
         Client::builder(TokioExecutor::new()).build_http();
