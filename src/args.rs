@@ -4,26 +4,9 @@ use std::str::FromStr;
 
 use argh::FromArgs;
 use color_eyre::eyre::eyre;
-use color_eyre::{Report, Result};
+use color_eyre::Result;
 use itertools::Itertools;
-
-#[derive(Copy, Clone, Debug)]
-pub enum Protocol {
-    Mutual,
-    Public,
-}
-
-impl FromStr for Protocol {
-    type Err = Report;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "mtls" => Ok(Self::Mutual),
-            "public" => Ok(Self::Public),
-            _ => Err(eyre!("invalid protocol '{value}' provided")),
-        }
-    }
-}
+use mutual_tls::Protocol;
 
 #[derive(Clone, Debug)]
 pub struct Authorisation {

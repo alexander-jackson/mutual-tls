@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{eyre, Report, Result};
 use http::{Request, Response};
 use hyper::body::Incoming;
 use hyper::service::Service;
@@ -16,7 +17,23 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::LazyConfigAcceptor;
 
-use crate::args::Protocol;
+#[derive(Copy, Clone, Debug)]
+pub enum Protocol {
+    Mutual,
+    Public,
+}
+
+impl FromStr for Protocol {
+    type Err = Report;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "mtls" => Ok(Self::Mutual),
+            "public" => Ok(Self::Public),
+            _ => Err(eyre!("invalid protocol '{value}' provided")),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ConnectionContext {

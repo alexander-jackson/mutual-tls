@@ -7,8 +7,7 @@ use hyper::body::Incoming;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-
-use crate::server::ConnectionContext;
+use mutual_tls::ConnectionContext;
 
 pub async fn handle(
     mut req: Request<Incoming>,

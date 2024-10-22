@@ -3,6 +3,7 @@ use std::sync::Arc;
 use args::{Authorisation, Domain};
 use color_eyre::eyre::Result;
 use hyper::service::service_fn;
+use mutual_tls::{ConnectionContext, MutualTlsServer};
 use rustls::server::{ResolvesServerCertUsingSni, WebPkiClientVerifier};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -11,11 +12,9 @@ use tracing_subscriber::EnvFilter;
 
 mod args;
 mod proxy;
-mod server;
 mod tls;
 
 use crate::args::Args;
-use crate::server::{ConnectionContext, MutualTlsServer};
 
 fn setup() -> Result<()> {
     color_eyre::install()?;
