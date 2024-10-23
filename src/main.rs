@@ -5,6 +5,7 @@ use color_eyre::eyre::Result;
 use hyper::service::service_fn;
 use mutual_tls::{ConnectionContext, MutualTlsServer};
 use rustls::server::{ResolvesServerCertUsingSni, WebPkiClientVerifier};
+use tokio::net::TcpListener;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -78,9 +79,12 @@ async fn main() -> Result<()> {
         })
     };
 
+    let listener = TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "listening for incoming requests");
+
     let server = MutualTlsServer::new(protocols, verifier, Arc::new(resolver), service_factory);
 
-    server.run(addr).await?;
+    server.run(listener).await?;
 
     Ok(())
 }

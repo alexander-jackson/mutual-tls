@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -80,13 +79,10 @@ where
     }
 
     /// Runs the server on the provided address.
-    pub async fn run(&self, addr: SocketAddr) -> Result<()>
+    pub async fn run(&self, listener: TcpListener) -> Result<()>
     where
         <S as Service<Request<Incoming>>>::Future: Send,
     {
-        let incoming = TcpListener::bind(addr).await?;
-        tracing::info!(%addr, "listening for incoming requests");
-
         let default_config = Arc::new(
             ServerConfig::builder()
                 .with_no_client_auth()
@@ -100,7 +96,7 @@ where
         );
 
         loop {
-            let (tcp_stream, _remote_addr) = incoming.accept().await?;
+            let (tcp_stream, _remote_addr) = listener.accept().await?;
             let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
 
             tokio::pin!(acceptor);
