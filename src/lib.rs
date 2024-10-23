@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use color_eyre::eyre::{eyre, Report, Result};
 use http::{Request, Response};
-use hyper::body::Incoming;
+use http_body_util::combinators::BoxBody;
+use hyper::body::{Bytes, Incoming};
 use hyper::service::Service;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
@@ -55,8 +56,11 @@ pub struct MutualTlsServer<F> {
 impl<F, S> MutualTlsServer<F>
 where
     F: Fn(ConnectionContext) -> S,
-    S: Service<Request<Incoming>, Response = Response<Incoming>, Error = hyper::Error>
-        + Send
+    S: Service<
+            Request<Incoming>,
+            Response = Response<BoxBody<Bytes, hyper::Error>>,
+            Error = hyper::Error,
+        > + Send
         + 'static,
     S::Future: 'static,
 {

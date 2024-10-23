@@ -7,6 +7,7 @@ edition = "2021"
 argh = "0.1.12"
 color-eyre = "0.6.3"
 http = "1.1.0"
+http-body-util = "0.1.2"
 hyper = "1.5.0"
 hyper-util = { version = "0.1.9", features = ["client", "client-legacy", "http1", "http2", "server"] }
 itertools = "0.13.0"
