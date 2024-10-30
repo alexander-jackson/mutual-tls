@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
 
     let server = MutualTlsServer::new(protocols, verifier, Arc::new(resolver), service_factory);
 
-    server.run(listener).await?;
+    server.run(listener).await;
 
     Ok(())
 }

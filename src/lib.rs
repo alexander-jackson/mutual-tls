@@ -79,7 +79,18 @@ where
     }
 
     /// Runs the server on the provided address.
-    pub async fn run(&self, listener: TcpListener) -> Result<()>
+    pub async fn run(&self, mut listener: TcpListener)
+    where
+        <S as Service<Request<Incoming>>>::Future: Send,
+    {
+        loop {
+            if let Err(e) = self.try_handle_connection(&mut listener).await {
+                tracing::warn!(%e, "failed to handle connection");
+            }
+        }
+    }
+
+    async fn try_handle_connection(&self, listener: &mut TcpListener) -> Result<()>
     where
         <S as Service<Request<Incoming>>>::Future: Send,
     {
@@ -95,85 +106,88 @@ where
                 .with_cert_resolver(Arc::clone(&self.resolver)),
         );
 
-        loop {
-            let (tcp_stream, _remote_addr) = listener.accept().await?;
-            let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
+        let (tcp_stream, _remote_addr) = listener.accept().await?;
+        let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
 
-            tokio::pin!(acceptor);
+        tokio::pin!(acceptor);
 
-            match acceptor.as_mut().await {
-                Ok(start) => {
-                    let client_hello = start.client_hello();
-                    let server_name = client_hello.server_name();
-                    tracing::debug!(?server_name, "the client greeted us");
+        match acceptor.as_mut().await {
+            Ok(start) => {
+                let client_hello = start.client_hello();
+                let server_name = client_hello.server_name();
+                tracing::debug!(?server_name, "the client greeted us");
 
-                    let Some(server_name) = server_name else {
-                        handle_bad_request(&mut acceptor).await?;
-                        continue;
-                    };
-
-                    let config = self
-                        .protocols
-                        .get(server_name)
-                        .map(|protocol| match protocol {
-                            Protocol::Mutual => Arc::clone(&mtls_config),
-                            Protocol::Public => Arc::clone(&default_config),
-                        })
-                        .ok_or_else(|| eyre!("failed to get host from SNI"))?;
-
-                    let stream = match start.into_stream(config).await {
-                        Ok(stream) => stream,
-                        Err(e) => {
-                            tracing::debug!(?e, "failed to upgrade to a tls stream");
-                            handle_bad_request(&mut acceptor).await?;
-                            continue;
-                        }
-                    };
-
-                    let conn = stream.get_ref().1;
-
-                    tracing::debug!(
-                        certificates = ?conn.peer_certificates().map(|certs| certs.len()),
-                        "acquired some certificates from the client"
-                    );
-
-                    let unit = if let Some(certs) = conn.peer_certificates() {
-                        let (_, client_cert) = x509_parser::parse_x509_certificate(&certs[0])?;
-
-                        let unit = client_cert
-                            .tbs_certificate
-                            .subject
-                            .iter_organizational_unit()
-                            .next()
-                            .ok_or_else(|| eyre!("invalid certificate provided"))?
-                            .as_str()?;
-
-                        tracing::info!(?unit, "parsed a client certificate");
-
-                        Some(unit.to_owned())
-                    } else {
-                        None
-                    };
-
-                    let ctx = ConnectionContext { unit };
-                    let service = (self.service_factory)(ctx);
-
-                    tokio::spawn(async move {
-                        if let Err(err) = Builder::new(TokioExecutor::new())
-                            .serve_connection(TokioIo::new(stream), service)
-                            .await
-                        {
-                            tracing::debug!(?err, "failed to serve connection");
-                        }
-                    });
-                }
-                Err(err) => {
-                    tracing::debug!(?err, "error occurred when accepting connections");
-
+                let Some(server_name) = server_name else {
                     handle_bad_request(&mut acceptor).await?;
-                }
+                    return Ok(());
+                };
+
+                let Some(config) = self
+                    .protocols
+                    .get(server_name)
+                    .map(|protocol| match protocol {
+                        Protocol::Mutual => Arc::clone(&mtls_config),
+                        Protocol::Public => Arc::clone(&default_config),
+                    })
+                else {
+                    handle_bad_request(&mut acceptor).await?;
+                    return Ok(());
+                };
+
+                let stream = match start.into_stream(config).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        tracing::debug!(?e, "failed to upgrade to a tls stream");
+                        handle_bad_request(&mut acceptor).await?;
+                        return Ok(());
+                    }
+                };
+
+                let conn = stream.get_ref().1;
+
+                tracing::debug!(
+                    certificates = ?conn.peer_certificates().map(|certs| certs.len()),
+                    "acquired some certificates from the client"
+                );
+
+                let unit = if let Some(certs) = conn.peer_certificates() {
+                    let (_, client_cert) = x509_parser::parse_x509_certificate(&certs[0])?;
+
+                    let unit = client_cert
+                        .tbs_certificate
+                        .subject
+                        .iter_organizational_unit()
+                        .next()
+                        .ok_or_else(|| eyre!("invalid certificate provided"))?
+                        .as_str()?;
+
+                    tracing::info!(?unit, "parsed a client certificate");
+
+                    Some(unit.to_owned())
+                } else {
+                    None
+                };
+
+                let ctx = ConnectionContext { unit };
+                let service = (self.service_factory)(ctx);
+
+                tokio::spawn(async move {
+                    if let Err(err) = Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                    {
+                        tracing::debug!(?err, "failed to serve connection");
+                    }
+                });
+            }
+            Err(err) => {
+                tracing::debug!(?err, "error occurred when accepting connections");
+
+                handle_bad_request(&mut acceptor).await?;
             }
         }
+
+        Ok(())
     }
 }
 
