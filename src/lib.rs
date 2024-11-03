@@ -37,8 +37,8 @@ impl FromStr for Protocol {
 
 #[derive(Clone, Debug)]
 pub struct ConnectionContext {
-    /// The operational unit provided on the client certificate, if using mTLS.
-    pub unit: Option<String>,
+    /// The common name provided on the client certificate, if using mTLS.
+    pub common_name: Option<String>,
 }
 
 pub struct MutualTlsServer<F> {
@@ -150,25 +150,24 @@ where
                     "acquired some certificates from the client"
                 );
 
-                let unit = if let Some(certs) = conn.peer_certificates() {
+                let common_name = if let Some(certs) = conn.peer_certificates() {
                     let (_, client_cert) = x509_parser::parse_x509_certificate(&certs[0])?;
 
-                    let unit = client_cert
-                        .tbs_certificate
+                    let common_name = client_cert
                         .subject
-                        .iter_organizational_unit()
+                        .iter_common_name()
                         .next()
                         .ok_or_else(|| eyre!("invalid certificate provided"))?
                         .as_str()?;
 
-                    tracing::info!(?unit, "parsed a client certificate");
+                    tracing::info!(?common_name, "parsed a client certificate");
 
-                    Some(unit.to_owned())
+                    Some(common_name.to_owned())
                 } else {
                     None
                 };
 
-                let ctx = ConnectionContext { unit };
+                let ctx = ConnectionContext { common_name };
                 let service = (self.service_factory)(ctx);
 
                 tokio::spawn(async move {

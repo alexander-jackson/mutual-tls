@@ -20,7 +20,7 @@ pub async fn handle(
     let host = req.headers().get(HOST);
     let user_agent = req.headers().get(USER_AGENT);
 
-    tracing::info!(%method, %uri, ?host, ?user_agent, unit = ?ctx.unit, "handling a request");
+    tracing::info!(%method, %uri, ?host, ?user_agent, common_name = ?ctx.common_name, "handling a request");
 
     let client: Client<HttpConnector, Incoming> =
         Client::builder(TokioExecutor::new()).build_http();
