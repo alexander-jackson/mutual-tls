@@ -3,7 +3,7 @@ use std::sync::Arc;
 use args::{Authorisation, Domain};
 use color_eyre::eyre::Result;
 use hyper::service::service_fn;
-use mutual_tls::{ConnectionContext, MutualTlsServer};
+use mutual_tls::{ConnectionContext, MutualTlsServer, StaticProtocolResolver};
 use rustls::server::{ResolvesServerCertUsingSni, WebPkiClientVerifier};
 use tokio::net::TcpListener;
 use tracing::level_filters::LevelFilter;
@@ -50,6 +50,8 @@ async fn main() -> Result<()> {
         .collect();
 
     tracing::info!(?protocols, "parsed some arguments for protocols");
+
+    let protocols = StaticProtocolResolver::new(protocols);
 
     let store = crate::tls::initialise_root_cert_store(mtls_certificate)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(store)).build()?;

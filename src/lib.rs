@@ -42,9 +42,29 @@ pub struct ConnectionContext {
     pub common_name: Option<String>,
 }
 
+pub trait ProtocolResolver: Send + Sync {
+    fn resolve(&self, domain: &str) -> Option<Protocol>;
+}
+
+pub struct StaticProtocolResolver {
+    inner: HashMap<String, Protocol>,
+}
+
+impl StaticProtocolResolver {
+    pub fn new(inner: HashMap<String, Protocol>) -> Arc<Self> {
+        Arc::new(Self { inner })
+    }
+}
+
+impl ProtocolResolver for StaticProtocolResolver {
+    fn resolve(&self, domain: &str) -> Option<Protocol> {
+        self.inner.get(domain).copied()
+    }
+}
+
 pub struct MutualTlsServer<F> {
     /// Information about which domains are using mTLS or not.
-    protocols: HashMap<String, Protocol>,
+    protocols: Arc<dyn ProtocolResolver>,
     /// Verifier for client certificates, when using mTLS.
     verifier: Arc<dyn ClientCertVerifier>,
     /// Resolver for server certificates, based on the SNI host.
@@ -65,7 +85,7 @@ where
 {
     /// Creates a new instance of the server.
     pub fn new(
-        protocols: HashMap<String, Protocol>,
+        protocols: Arc<dyn ProtocolResolver>,
         verifier: Arc<dyn ClientCertVerifier>,
         resolver: Arc<dyn ResolvesServerCert>,
         service_factory: F,
@@ -116,13 +136,13 @@ where
                     return Ok(());
                 };
 
-                let Some(config) = self
-                    .protocols
-                    .get(server_name)
-                    .map(|protocol| match protocol {
-                        Protocol::Mutual => Arc::clone(&mtls_config),
-                        Protocol::Public => Arc::clone(&default_config),
-                    })
+                let Some(config) =
+                    self.protocols
+                        .resolve(server_name)
+                        .map(|protocol| match protocol {
+                            Protocol::Mutual => Arc::clone(&mtls_config),
+                            Protocol::Public => Arc::clone(&default_config),
+                        })
                 else {
                     handle_bad_request(&mut acceptor).await?;
                     return Ok(());
