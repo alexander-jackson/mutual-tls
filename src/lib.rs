@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -55,13 +56,12 @@ pub struct MutualTlsServer<F> {
 impl<F, S> MutualTlsServer<F>
 where
     F: Fn(ConnectionContext) -> S,
-    S: Service<
-            Request<Incoming>,
-            Response = Response<BoxBody<Bytes, hyper::Error>>,
-            Error = hyper::Error,
-        > + Send
+    S: Service<Request<Incoming>, Response = Response<BoxBody<Bytes, hyper::Error>>>
+        + Send
         + 'static,
     S::Future: 'static,
+    <S as Service<Request<Incoming>>>::Future: Send,
+    <S as Service<Request<Incoming>>>::Error: Into<Box<dyn Error + Send + Sync>>,
 {
     /// Creates a new instance of the server.
     pub fn new(
@@ -79,10 +79,7 @@ where
     }
 
     /// Runs the server on the provided address.
-    pub async fn run(&self, mut listener: TcpListener)
-    where
-        <S as Service<Request<Incoming>>>::Future: Send,
-    {
+    pub async fn run(&self, mut listener: TcpListener) {
         loop {
             if let Err(e) = self.try_handle_connection(&mut listener).await {
                 tracing::warn!(%e, "failed to handle connection");
@@ -90,10 +87,7 @@ where
         }
     }
 
-    async fn try_handle_connection(&self, listener: &mut TcpListener) -> Result<()>
-    where
-        <S as Service<Request<Incoming>>>::Future: Send,
-    {
+    async fn try_handle_connection(&self, listener: &mut TcpListener) -> Result<()> {
         let default_config = Arc::new(
             ServerConfig::builder()
                 .with_no_client_auth()
