@@ -4,17 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-argh = "0.1.12"
+argh = "0.1.13"
 color-eyre = "0.6.3"
-http = "1.1.0"
+http = "1.2.0"
 http-body-util = "0.1.2"
-hyper = "1.5.0"
-hyper-util = { version = "0.1.9", features = ["client", "client-legacy", "http1", "http2", "server"] }
-itertools = "0.13.0"
-rustls = { version = "0.23.14", default-features = false, features = ["ring", "std"] }
+hyper = "1.5.2"
+hyper-util = { version = "0.1.10", features = ["client", "client-legacy", "http1", "http2", "server"] }
+itertools = "0.14.0"
+rustls = { version = "0.23.20", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2.0"
-tokio = { version = "1.40.0", features = ["rt-multi-thread", "macros", "io-util"] }
-tokio-rustls = { version = "0.26.0", default-features = false, features = ["ring", "logging", "tls12"] }
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros", "io-util"] }
+tokio-rustls = { version = "0.26.1", default-features = false, features = ["ring", "logging", "tls12"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 x509-parser = "0.16.0"
