@@ -103,6 +103,8 @@ where
         loop {
             if let Err(e) = self.try_handle_connection(&mut listener).await {
                 tracing::warn!(%e, "failed to handle connection");
+            } else {
+                tracing::trace!("handled a connection from a client");
             }
         }
     }
@@ -120,10 +122,13 @@ where
                 .with_cert_resolver(Arc::clone(&self.resolver)),
         );
 
-        let (tcp_stream, _remote_addr) = listener.accept().await?;
-        let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
+        let (tcp_stream, remote_addr) = listener.accept().await?;
+        tracing::trace!(%remote_addr, "accepted a connection from a client");
 
+        let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
         tokio::pin!(acceptor);
+
+        tracing::trace!(%remote_addr, "waiting for the client to say hello");
 
         match acceptor.as_mut().await {
             Ok(start) => {
@@ -132,6 +137,7 @@ where
                 tracing::debug!(?server_name, "the client greeted us");
 
                 let Some(server_name) = server_name else {
+                    tracing::trace!(%remote_addr, "client did not provide a server name");
                     handle_bad_request(&mut acceptor).await?;
                     return Ok(());
                 };
@@ -144,6 +150,7 @@ where
                             Protocol::Public => Arc::clone(&default_config),
                         })
                 else {
+                    tracing::trace!(%remote_addr, %server_name, "client request did not match a known server name");
                     handle_bad_request(&mut acceptor).await?;
                     return Ok(());
                 };
@@ -183,6 +190,8 @@ where
 
                 let ctx = ConnectionContext { common_name };
                 let service = (self.service_factory)(ctx);
+
+                tracing::trace!("spawning a task to serve the connection");
 
                 tokio::spawn(async move {
                     if let Err(err) = Builder::new(TokioExecutor::new())
