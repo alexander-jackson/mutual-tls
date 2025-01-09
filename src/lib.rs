@@ -155,6 +155,8 @@ where
                     return Ok(());
                 };
 
+                tracing::trace!(%remote_addr, "converting the start into a proper stream");
+
                 let stream = match start.into_stream(config).await {
                     Ok(stream) => stream,
                     Err(e) => {
