@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 
     let downstream = Arc::from(downstream.as_str());
 
-    let service_factory = |ctx: ConnectionContext| {
+    let service_factory = move |ctx: ConnectionContext| {
         let downstream = Arc::clone(&downstream);
         let ctx = ctx.clone();
 
