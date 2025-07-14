@@ -21,7 +21,7 @@ use tokio_rustls::LazyConfigAcceptor;
 use tracing::Instrument;
 
 /// Represents the authentication level for a connection.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AuthenticationLevel {
     /// Standard TLS, without mutual authentication.
     Standard,
@@ -61,6 +61,17 @@ pub struct StaticAuthenticationLevelResolver {
 
 impl StaticAuthenticationLevelResolver {
     /// Creates a new instance of [`StaticAuthenticationLevelResolver`] with the provided mapping.
+    ///
+    /// # Examples
+    /// ```
+    /// # use std::collections::HashMap;
+    /// # use mutual_tls::{StaticAuthenticationLevelResolver, AuthenticationLevel};
+    /// let mut levels = HashMap::new();
+    /// levels.insert("example.com".to_string(), AuthenticationLevel::Standard);
+    /// levels.insert("private.example.com".to_string(), AuthenticationLevel::Mutual);
+    ///
+    /// let resolver = StaticAuthenticationLevelResolver::new(levels);
+    /// ```
     pub fn new(inner: HashMap<String, AuthenticationLevel>) -> Arc<Self> {
         Arc::new(Self { inner })
     }
@@ -345,4 +356,54 @@ async fn handle_bad_request<IO: AsyncRead + AsyncWrite + Unpin>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    use crate::{
+        AuthenticationLevel, AuthenticationLevelResolver, StaticAuthenticationLevelResolver,
+    };
+
+    #[test]
+    fn static_authenticate_level_resolver_works_as_expected() {
+        let public_domain = "example.com";
+        let private_domain = "private.example.com";
+        let unknown_domain = "unknown.com";
+
+        let mut levels = HashMap::new();
+        levels.insert(public_domain.to_string(), AuthenticationLevel::Standard);
+        levels.insert(private_domain.to_string(), AuthenticationLevel::Mutual);
+
+        let resolver = StaticAuthenticationLevelResolver::new(levels);
+
+        assert_eq!(
+            resolver.resolve(public_domain),
+            Some(AuthenticationLevel::Standard)
+        );
+
+        assert_eq!(
+            resolver.resolve(private_domain),
+            Some(AuthenticationLevel::Mutual)
+        );
+
+        assert_eq!(resolver.resolve(unknown_domain), None);
+    }
+
+    #[test]
+    fn can_parse_authentication_levels_from_strings() {
+        assert_eq!(
+            AuthenticationLevel::from_str("mutual").unwrap(),
+            AuthenticationLevel::Mutual
+        );
+
+        assert_eq!(
+            AuthenticationLevel::from_str("standard").unwrap(),
+            AuthenticationLevel::Standard
+        );
+
+        assert!(AuthenticationLevel::from_str("invalid").is_err());
+    }
 }
