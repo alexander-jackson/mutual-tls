@@ -206,7 +206,6 @@ where
 
             if let Err(e) = res {
                 tracing::debug!(%e, "failed to handle connection");
-                return;
             }
         };
 
