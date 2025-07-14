@@ -6,11 +6,11 @@ use argh::FromArgs;
 use color_eyre::eyre::eyre;
 use color_eyre::Result;
 use itertools::Itertools;
-use mutual_tls::Protocol;
+use mutual_tls::AuthenticationLevel;
 
 #[derive(Clone, Debug)]
 pub struct Authorisation {
-    pub protocol: Protocol,
+    pub protocol: AuthenticationLevel,
     pub chain: PathBuf,
     pub key: PathBuf,
 }
@@ -30,7 +30,7 @@ impl FromStr for Domain {
             .ok_or_else(|| eyre!("invalid argument provided ({value})"))?;
 
         let authorisation = Authorisation {
-            protocol: Protocol::from_str(protocol)?,
+            protocol: AuthenticationLevel::from_str(protocol)?,
             chain: PathBuf::from(chain),
             key: PathBuf::from(key),
         };
