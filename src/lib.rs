@@ -15,68 +15,116 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use rustls::server::danger::ClientCertVerifier;
 use rustls::server::{Acceptor, ResolvesServerCert};
-use rustls::ServerConfig;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::LazyConfigAcceptor;
 use tracing::Instrument;
 
+/// Represents the authentication level for a connection.
 #[derive(Copy, Clone, Debug)]
-pub enum Protocol {
+pub enum AuthenticationLevel {
+    /// Standard TLS, without mutual authentication.
+    Standard,
+    /// Mutual TLS, requiring client certificates.
     Mutual,
-    Public,
 }
 
-impl FromStr for Protocol {
+impl FromStr for AuthenticationLevel {
     type Err = Report;
 
     fn from_str(value: &str) -> Result<Self> {
         match value {
-            "mtls" => Ok(Self::Mutual),
-            "public" => Ok(Self::Public),
+            "mutual" => Ok(Self::Mutual),
+            "standard" => Ok(Self::Standard),
             _ => Err(eyre!("invalid protocol '{value}' provided")),
         }
     }
 }
 
+/// Represents the context of a connection.
 #[derive(Clone, Debug)]
 pub struct ConnectionContext {
     /// The common name provided on the client certificate, if using mTLS.
     pub common_name: Option<String>,
 }
 
-pub trait ProtocolResolver: Send + Sync {
-    fn resolve(&self, domain: &str) -> Option<Protocol>;
+/// A trait for verifying client certificates in a server context.
+pub trait AuthenticationLevelResolver: Send + Sync {
+    /// Resolves the authentication level for a given domain.
+    fn resolve(&self, domain: &str) -> Option<AuthenticationLevel>;
 }
 
-pub struct StaticProtocolResolver {
-    inner: HashMap<String, Protocol>,
+/// A resolver for authentication levels based on static configuration.
+pub struct StaticAuthenticationLevelResolver {
+    inner: HashMap<String, AuthenticationLevel>,
 }
 
-impl StaticProtocolResolver {
-    pub fn new(inner: HashMap<String, Protocol>) -> Arc<Self> {
+impl StaticAuthenticationLevelResolver {
+    pub fn new(inner: HashMap<String, AuthenticationLevel>) -> Arc<Self> {
         Arc::new(Self { inner })
     }
 }
 
-impl ProtocolResolver for StaticProtocolResolver {
-    fn resolve(&self, domain: &str) -> Option<Protocol> {
+impl AuthenticationLevelResolver for StaticAuthenticationLevelResolver {
+    fn resolve(&self, domain: &str) -> Option<AuthenticationLevel> {
         self.inner.get(domain).copied()
     }
 }
 
-pub struct MutualTlsServer<F> {
-    /// Information about which domains are using mTLS or not.
-    protocols: Arc<dyn ProtocolResolver>,
-    /// Verifier for client certificates, when using mTLS.
-    verifier: Arc<dyn ClientCertVerifier>,
-    /// Resolver for server certificates, based on the SNI host.
-    resolver: Arc<dyn ResolvesServerCert>,
-    /// Factory for creating services to handle client connections.
-    service_factory: Arc<F>,
+/// Represents the timeout configuration for the server.
+pub struct ServerTimeouts {
+    /// Timeout for the client to say hello.
+    hello_timeout: Duration,
+    /// Timeout for the entire connection.
+    connection_timeout: Duration,
 }
 
-impl<F, S> MutualTlsServer<F>
+impl ServerTimeouts {
+    /// Creates a new instance of `ServerTimeouts` with the specified timeouts.
+    pub fn new(hello_timeout: Duration, connection_timeout: Duration) -> Self {
+        Self {
+            hello_timeout,
+            connection_timeout,
+        }
+    }
+}
+
+impl Default for ServerTimeouts {
+    fn default() -> Self {
+        Self {
+            hello_timeout: Duration::from_secs(5),
+            connection_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// Represents the configuration for the server.
+pub struct ServerConfiguration {
+    /// Timeouts for various operations in the server.
+    timeouts: ServerTimeouts,
+}
+
+impl ServerConfiguration {
+    pub fn new(timeouts: ServerTimeouts) -> Self {
+        Self { timeouts }
+    }
+}
+
+/// Represents a server that handles incoming connections and serves requests.
+pub struct Server<F> {
+    /// Information about which domains are using mTLS or not.
+    authentication_level_resolver: Arc<dyn AuthenticationLevelResolver>,
+    /// Verifier for client certificates, when using mTLS.
+    client_certificate_verifier: Arc<dyn ClientCertVerifier>,
+    /// Resolver for server certificates, based on the SNI host.
+    server_certificate_resolver: Arc<dyn ResolvesServerCert>,
+    /// Factory for creating services to handle client connections.
+    service_factory: Arc<F>,
+    /// Configuration for the server.
+    configuration: Arc<ServerConfiguration>,
+}
+
+impl<F, S> Server<F>
 where
     F: Fn(ConnectionContext) -> S + Send + Sync + 'static,
     S: Service<Request<Incoming>, Response = Response<BoxBody<Bytes, hyper::Error>>>
@@ -88,16 +136,18 @@ where
 {
     /// Creates a new instance of the server.
     pub fn new(
-        protocols: Arc<dyn ProtocolResolver>,
-        verifier: Arc<dyn ClientCertVerifier>,
-        resolver: Arc<dyn ResolvesServerCert>,
+        authentication_level_resolver: Arc<dyn AuthenticationLevelResolver>,
+        client_certificate_verifier: Arc<dyn ClientCertVerifier>,
+        server_certificate_resolver: Arc<dyn ResolvesServerCert>,
         service_factory: F,
+        configuration: ServerConfiguration,
     ) -> Self {
         Self {
-            protocols,
-            verifier,
-            resolver,
+            authentication_level_resolver,
+            client_certificate_verifier,
+            server_certificate_resolver,
             service_factory: Arc::new(service_factory),
+            configuration: Arc::new(configuration),
         }
     }
 
@@ -114,15 +164,15 @@ where
 
     async fn try_handle_connection(&self, listener: &mut TcpListener) -> Result<()> {
         let default_config = Arc::new(
-            ServerConfig::builder()
+            rustls::ServerConfig::builder()
                 .with_no_client_auth()
-                .with_cert_resolver(Arc::clone(&self.resolver)),
+                .with_cert_resolver(Arc::clone(&self.server_certificate_resolver)),
         );
 
         let mtls_config = Arc::new(
-            ServerConfig::builder()
-                .with_client_cert_verifier(Arc::clone(&self.verifier))
-                .with_cert_resolver(Arc::clone(&self.resolver)),
+            rustls::ServerConfig::builder()
+                .with_client_cert_verifier(Arc::clone(&self.client_certificate_verifier))
+                .with_cert_resolver(Arc::clone(&self.server_certificate_resolver)),
         );
 
         let (tcp_stream, remote_addr) = listener.accept().await?;
@@ -131,20 +181,22 @@ where
 
         tracing::trace!("accepted a connection from a client");
 
-        let protocols = Arc::clone(&self.protocols);
+        let authentication_level_resolver = Arc::clone(&self.authentication_level_resolver);
         let mtls_config = Arc::clone(&mtls_config);
         let default_config = Arc::clone(&default_config);
         let service_factory = Arc::clone(&self.service_factory);
+        let configuration = Arc::clone(&self.configuration);
 
         let future = async move {
-            let timeout = Duration::from_secs(5);
+            let timeout = configuration.timeouts.connection_timeout;
             let future = handle_connection(
                 tcp_stream,
                 remote_addr,
-                protocols,
+                authentication_level_resolver,
                 mtls_config,
                 default_config,
                 service_factory,
+                configuration,
             );
 
             let Ok(res) = tokio::time::timeout(timeout, future).await else {
@@ -170,10 +222,11 @@ where
 async fn handle_connection<F, S>(
     tcp_stream: TcpStream,
     remote_addr: SocketAddr,
-    protocols: Arc<dyn ProtocolResolver>,
-    mtls_config: Arc<ServerConfig>,
-    default_config: Arc<ServerConfig>,
+    authentication_level_resolver: Arc<dyn AuthenticationLevelResolver>,
+    mtls_config: Arc<rustls::ServerConfig>,
+    default_config: Arc<rustls::ServerConfig>,
     service_factory: Arc<F>,
+    configuration: Arc<ServerConfiguration>,
 ) -> Result<()>
 where
     F: Fn(ConnectionContext) -> S,
@@ -184,13 +237,12 @@ where
     <S as Service<Request<Incoming>>>::Future: Send,
     <S as Service<Request<Incoming>>>::Error: Into<Box<dyn Error + Send + Sync>>,
 {
-    // Implementation of the connection handling logic goes here.
     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
     tokio::pin!(acceptor);
 
     tracing::trace!(%remote_addr, "waiting for the client to say hello");
 
-    let timeout = Duration::from_secs(30);
+    let timeout = configuration.timeouts.hello_timeout;
     let future = acceptor.as_mut();
 
     let Ok(accepted) = tokio::time::timeout(timeout, future).await else {
@@ -211,11 +263,11 @@ where
                 return Ok(());
             };
 
-            let Some(config) = protocols
+            let Some(config) = authentication_level_resolver
                 .resolve(server_name)
                 .map(|protocol| match protocol {
-                    Protocol::Mutual => Arc::clone(&mtls_config),
-                    Protocol::Public => Arc::clone(&default_config),
+                    AuthenticationLevel::Mutual => Arc::clone(&mtls_config),
+                    AuthenticationLevel::Standard => Arc::clone(&default_config),
                 })
             else {
                 tracing::trace!(%remote_addr, %server_name, "client request did not match a known server name");
