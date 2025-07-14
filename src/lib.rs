@@ -60,6 +60,7 @@ pub struct StaticAuthenticationLevelResolver {
 }
 
 impl StaticAuthenticationLevelResolver {
+    /// Creates a new instance of [`StaticAuthenticationLevelResolver`] with the provided mapping.
     pub fn new(inner: HashMap<String, AuthenticationLevel>) -> Arc<Self> {
         Arc::new(Self { inner })
     }
@@ -80,7 +81,7 @@ pub struct ServerTimeouts {
 }
 
 impl ServerTimeouts {
-    /// Creates a new instance of `ServerTimeouts` with the specified timeouts.
+    /// Creates a new instance of [`ServerTimeouts`] with the specified timeouts.
     pub fn new(hello_timeout: Duration, connection_timeout: Duration) -> Self {
         Self {
             hello_timeout,
@@ -105,6 +106,7 @@ pub struct ServerConfiguration {
 }
 
 impl ServerConfiguration {
+    /// Creates a new instance of [`ServerConfiguration`] with the specified timeouts.
     pub fn new(timeouts: ServerTimeouts) -> Self {
         Self { timeouts }
     }
