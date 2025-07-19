@@ -1,3 +1,10 @@
+//! This crate provides a server implementation that supports both standard TLS and mutual TLS
+//! (mTLS) authentication.
+//!
+//! It allows for dynamic resolution of authentication levels based on the requested server name
+//! and provides a flexible way to handle client connections with different authentication
+//! requirements.
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
