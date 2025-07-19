@@ -94,6 +94,7 @@ impl AuthenticationLevelResolver for StaticAuthenticationLevelResolver {
 }
 
 /// Represents the timeout configuration for the server.
+#[derive(Copy, Clone, Debug)]
 pub struct ServerTimeouts {
     /// Timeout for the client to say hello.
     hello_timeout: Duration,
@@ -121,6 +122,7 @@ impl Default for ServerTimeouts {
 }
 
 /// Represents the configuration for the server.
+#[derive(Copy, Clone, Debug, Default)]
 pub struct ServerConfiguration {
     /// Timeouts for various operations in the server.
     timeouts: ServerTimeouts,
