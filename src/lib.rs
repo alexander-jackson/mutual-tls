@@ -51,6 +51,9 @@ pub struct ConnectionContext {
 /// A trait for verifying client certificates in a server context.
 pub trait AuthenticationLevelResolver: Send + Sync {
     /// Resolves the authentication level for a given domain.
+    ///
+    /// Returning [`Option::None`] indicates that the domain is not recognized. Implementations should always
+    /// return an authentication level for known domains.
     fn resolve(&self, domain: &str) -> Option<AuthenticationLevel>;
 }
 
